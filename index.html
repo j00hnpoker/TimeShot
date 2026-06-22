@@ -625,9 +625,12 @@ async function finalizeTS(){
   const im2=await new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=lastShot.big;});const c2=document.createElement("canvas");const s2=Math.min(1,60/Math.max(im2.width,im2.height));c2.width=Math.round(im2.width*s2);c2.height=Math.round(im2.height*s2);c2.getContext("2d").drawImage(im2,0,0,c2.width,c2.height);ts.thumb=c2.toDataURL("image/jpeg",.5);
   await store.set("ph:"+refId,{data:lastShot.big,created:now,lat:ts.lat,lng:ts.lng,heading:ts.heading});
   await store.set("ts:"+id,ts);const idx=await idxGet();idx.unshift(id);await store.set("tsindex",idx);
+    await store.set("ts:"+id,ts);
     await autoSync(ts);
     lastShot=null;
     stopCam();
+    // Petite délai pour que IndexedDB finisse (iOS Safari fix)
+    await new Promise(r=>setTimeout(r,100));
     await openTS(id);// await : on reste bloqué jusqu'à navigation complète
   }catch(e){
     console.error("[finalizeTS]",e);
@@ -759,6 +762,8 @@ async function addFrame(){
     await store.set("ts:"+activeTS.id,activeTS);
     await autoSync(activeTS);
     stopCam();
+    // Petite délai pour que IndexedDB finisse (iOS Safari fix)
+    await new Promise(r=>setTimeout(r,100));
     await openTS(activeTS.id);// await : navigation complète avant de finir
   }catch(e){
     console.error("[addFrame]",e);
