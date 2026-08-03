@@ -465,8 +465,8 @@ function setHub(m){hubMode=m;$("sMap").setAttribute("aria-pressed",m==="map");$(
 }renderHub();}
 function ensureMap(){if(map)return;// ── Supabase ────────────────────────────────────────────────────────────
 // 1. supabase.com → New Project (EU) → Settings → API
-const SUPA_URL='VOTRE_URL';        // ex: https://abcdef.supabase.co
-const SUPA_KEY='VOTRE_CLE_ANON';   // clé publique anon
+const SUPA_URL='https://ciwmmiousuftahpdwkzn.supabase.co';        // ex: https://abcdef.supabase.co
+const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpd25taWlvc3VmdGFocGR3a3puIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMjgxNjYsImV4cCI6MjA5NzcwNDE2Nn0.9gRZSdZv-LfXr22U-bnUxbs3TR3eY7GDpdXchIzDc8o';   // clé publique anon
 function initSB(){
   if(!window.supabase){setTimeout(initSB,250);return;}// CDN async: réessayer
   if(!SUPA_URL.startsWith('https://')){console.warn('[sb] URL non configurée');return;}
