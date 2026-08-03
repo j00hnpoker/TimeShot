@@ -215,7 +215,12 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:20px;height:20px;b
 <div class="modal hide" id="consentModal">
   <div class="mbox">
     <h2>PUBLICATION COMMUNAUTAIRE</h2>
-    <div class="consent-body">
+    <div class="consent-body" id="consentShort" style="display:none">
+      <p>Tu connais déjà les conditions&nbsp;: photo publiée sous <b>CC BY 4.0</b>, sujet libre de droits, rétractation possible sous 7 jours.</p>
+      <label class="consent-line"><input type="checkbox" id="ckShort"><span>Je confirme pour <b>cette photo</b>.</span></label>
+      <p class="consent-fine"><a href="#" id="consentDetails" style="color:var(--muted)">Revoir les conditions détaillées</a></p>
+    </div>
+    <div class="consent-body" id="consentFull">
       <p>En mode communautaire, ta photo est <b>partagée publiquement</b> pour documenter l'évolution du lieu dans le temps. Avant de continuer, tu dois accepter&nbsp;:</p>
       <label class="consent-line"><input type="checkbox" id="ck1"><span>Je suis l'<b>auteur</b> de cette photo (ou j'ai le droit de la publier).</span></label>
       <label class="consent-line"><input type="checkbox" id="ck2"><span>Le sujet est <b>libre de droits</b> (pas d'œuvre, logo, personne identifiable ou lieu protégé sans autorisation).</span></label>
@@ -765,7 +770,16 @@ $("modalOk").addEventListener("click",()=>{
   if(newVisibility==="community"){
     // Consentement licence obligatoire avant publication
     $("ck1").checked=$("ck2").checked=$("ck3").checked=$("ck4").checked=false;
+    if($("ckShort"))$("ckShort").checked=false;
     $("consentOk").disabled=true;
+    // Version courte si l'utilisateur a déjà donné le consentement complet
+    store.get("consentDone").then(done=>{
+      const short=!!done;
+      $("consentShort").style.display=short?"block":"none";
+      $("consentFull").style.display=short?"none":"block";
+    }).catch(()=>{
+      $("consentShort").style.display="none";$("consentFull").style.display="block";
+    });
     $("newModal").classList.add("hide");
     $("consentModal").classList.remove("hide");
   }else{
@@ -773,14 +787,21 @@ $("modalOk").addEventListener("click",()=>{
   }
 });
 // ── Consentement communautaire ──────────────────────────────────────────
-function _consentCheck(){$("consentOk").disabled=!($("ck1").checked&&$("ck2").checked&&$("ck3").checked&&$("ck4").checked);}
-["ck1","ck2","ck3","ck4"].forEach(id=>$(id).addEventListener("change",_consentCheck));
+function _consentCheck(){
+  const isShort=$("consentShort").style.display!=="none";
+  if(isShort){$("consentOk").disabled=!$("ckShort").checked;}
+  else{$("consentOk").disabled=!($("ck1").checked&&$("ck2").checked&&$("ck3").checked&&$("ck4").checked);}
+}
+["ck1","ck2","ck3","ck4","ckShort"].forEach(id=>{if($(id))$(id).addEventListener("change",_consentCheck);});
+// Revoir les conditions détaillées
+$("consentDetails").addEventListener("click",e=>{e.preventDefault();$("consentShort").style.display="none";$("consentFull").style.display="block";_consentCheck();});
 $("introOk").addEventListener("click",async()=>{$("introModal").classList.add("hide");try{await store.set("seenIntro",1);}catch(_){}});
 $("consentCancel").addEventListener("click",()=>{$("consentModal").classList.add("hide");$("newModal").classList.remove("hide");});
 $("consentOk").addEventListener("click",()=>{
   if($("consentOk").disabled)return;
   // Enregistrer la preuve de consentement pour ce TimeShot à venir
   pendingConsent={licensed:true,license:"CC-BY-4.0",author:true,freeSubject:true,adult:true,at:new Date().toISOString(),retractableUntil:new Date(Date.now()+7*864e5).toISOString()};
+  store.set("consentDone",1).catch(()=>{});// prochaine fois : version courte
   $("consentModal").classList.add("hide");openCreate();
 });
 
@@ -794,6 +815,7 @@ function openCreate(){
   $("prevCanvas").style.display="none";$("prevLabel").classList.add("hide");
   $("qsvg").style.opacity="0";$("fhud").classList.add("hide");$("ghostRow").classList.add("hide");
   $("camRow").classList.remove("hide");$("decideRow").classList.add("hide");$("sensors").classList.remove("hide");
+  $("noteField").classList.add("hide");$("noteField").value="";
   $("shutter").disabled=true;// re-activé par startCam() quand caméra prête
   $("hint").textContent="Cadre le lieu et déclenche.";
   show("viewCam");startCam();startSensors();
@@ -1023,6 +1045,7 @@ $("addFrame").addEventListener("click",async()=>{
   $("video").style.visibility="visible";$("reticle").style.display="none";
   $("captured").style.display="none";$("prevCanvas").style.display="none";$("prevLabel").classList.add("hide");
   $("camRow").classList.remove("hide");$("decideRow").classList.add("hide");
+  $("noteField").classList.add("hide");$("noteField").value="";
   $("ghostRow").classList.remove("hide");$("sensors").classList.remove("hide");$("shutter").disabled=false;
   $("hint").textContent="Ouverture de l'appareil photo…";
   // ── Ouvrir caméra MAINTENANT (avant tout await → iOS getUserMedia OK) ─────
