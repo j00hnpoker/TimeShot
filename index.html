@@ -325,7 +325,7 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:20px;height:20px;b
 (() => {
 "use strict";
 const $=id=>document.getElementById(id);
-let sb=null,sbUser=null;// Supabase - déclaré tôt pour éviter TDZ
+let sb=null,sbUser=null,isAdmin=false;// Supabase + admin - déclarés tôt pour éviter TDZ
 let cvReady=false;
 (function w(){if(window.cv&&cv.Mat){if(cv.getBuildInformation)cvReady=true;else cv.onRuntimeInitialized=()=>cvReady=true;}else setTimeout(w,60);})();
 
@@ -485,7 +485,6 @@ function initSB(){
     });
   }catch(e){console.warn("[sb] init",e);}
 }
-let isAdmin=false;
 async function checkAdmin(){
   isAdmin=false;
   if(sb&&sbUser){try{const{data}=await sb.from("admins").select("user_id").eq("user_id",sbUser.id).maybeSingle();isAdmin=!!data;}catch(_){}}
