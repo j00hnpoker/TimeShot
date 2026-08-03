@@ -235,12 +235,17 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:20px;height:20px;b
   <h2>CONNEXION</h2>
   <input type="email" id="authEmail" placeholder="Email" autocomplete="email">
   <input type="password" id="authPwd" placeholder="Mot de passe (min. 6 car.)" autocomplete="current-password">
+  <input type="password" id="authNewPwd" class="hide" placeholder="Nouveau mot de passe (min. 6 car.)" autocomplete="new-password">
   <div class="note" id="authMsg" style="min-height:14px;color:var(--lock)"></div>
-  <div class="row">
+  <div class="row" id="authRow">
     <button class="btn sm" id="authClose" style="max-width:90px">Annuler</button>
     <button class="btn accent sm" id="authIn" disabled>Connexion</button>
     <button class="btn sm" id="authUp" disabled>S'inscrire</button>
   </div>
+  <div class="row hide" id="authResetRow">
+    <button class="btn accent sm" id="authSetPwd">Définir le mot de passe</button>
+  </div>
+  <div class="note" style="text-align:center;font-size:11px;margin-top:4px"><a href="#" id="authForgot" style="color:var(--muted)">Mot de passe oublié ?</a></div>
   <div class="note" style="opacity:.4;text-align:center;font-size:10px">Requis pour synchroniser et contribuer à la communauté.</div>
 </div></div>
 <!-- Caméra -->
@@ -473,7 +478,11 @@ function initSB(){
   try{
     sb=window.supabase.createClient(SUPA_URL,SUPA_KEY);
     sb.auth.getSession().then(({data})=>{sbUser=data?.session?.user??null;updateAuthUI();});
-    sb.auth.onAuthStateChange((evt,session)=>{sbUser=session?.user??null;updateAuthUI();if(evt==='SIGNED_IN'){$('authModal').classList.add('hide');renderHub();}});
+    sb.auth.onAuthStateChange((evt,session)=>{
+      sbUser=session?.user??null;updateAuthUI();
+      if(evt==='PASSWORD_RECOVERY'){showResetMode();}
+      else if(evt==='SIGNED_IN'){$('authModal').classList.add('hide');renderHub();}
+    });
   }catch(e){console.warn("[sb] init",e);}
 }
 let isAdmin=false;
@@ -525,6 +534,45 @@ $('authUp').addEventListener('click',async()=>{
   const{error}=await sb.auth.signUp({email:$("authEmail").value,password:$("authPwd").value});
   $('authMsg').style.color=error?'var(--warn)':'var(--lock)';
   $('authMsg').textContent=error?'✗ '+error.message:'✓ Compte créé — vérifie ton email.';
+});
+// ── Réinitialisation du mot de passe ────────────────────────────────────────
+function showResetMode(){
+  $("authModal").classList.remove("hide");
+  $("authModal").querySelector("h2").textContent="NOUVEAU MOT DE PASSE";
+  $("authEmail").classList.add("hide");
+  $("authPwd").classList.add("hide");
+  $("authNewPwd").classList.remove("hide");
+  $("authRow").classList.add("hide");
+  $("authResetRow").classList.remove("hide");
+  $("authMsg").textContent="Choisis un nouveau mot de passe.";
+}
+function exitResetMode(){
+  $("authModal").querySelector("h2").textContent="CONNEXION";
+  $("authEmail").classList.remove("hide");
+  $("authPwd").classList.remove("hide");
+  $("authNewPwd").classList.add("hide");
+  $("authRow").classList.remove("hide");
+  $("authResetRow").classList.add("hide");
+}
+$("authSetPwd").addEventListener("click",async()=>{
+  if(!sb)return;
+  const np=$("authNewPwd").value;
+  if(!np||np.length<6){$("authMsg").style.color="var(--warn)";$("authMsg").textContent="Minimum 6 caractères.";return;}
+  $("authMsg").textContent="…";
+  const{error}=await sb.auth.updateUser({password:np});
+  $("authMsg").style.color=error?"var(--warn)":"var(--lock)";
+  if(error){$("authMsg").textContent="✗ "+error.message;}
+  else{$("authMsg").textContent="✓ Mot de passe mis à jour !";setTimeout(()=>{exitResetMode();$("authModal").classList.add("hide");renderHub();},1200);}
+});
+$("authForgot").addEventListener("click",async(e)=>{
+  e.preventDefault();
+  if(!sb)return;
+  const email=$("authEmail").value.trim();
+  if(!email){$("authMsg").style.color="var(--warn)";$("authMsg").textContent="Entre ton email d'abord.";return;}
+  $("authMsg").textContent="…";
+  const{error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:window.location.href.split("#")[0].split("?")[0]});
+  $("authMsg").style.color=error?"var(--warn)":"var(--lock)";
+  $("authMsg").textContent=error?"✗ "+error.message:"✓ Email de réinitialisation envoyé.";
 });
 // Chargement des Time Shots communautaires depuis Supabase
 async function loadCommunityFromServer(){
