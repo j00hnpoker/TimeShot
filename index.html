@@ -506,7 +506,9 @@ $("sMap").addEventListener("click",()=>setHub("map"));$("sList").addEventListene
 function setHub(m){hubMode=m;$("sMap").setAttribute("aria-pressed",m==="map");$("sList").setAttribute("aria-pressed",m==="list");$("map").style.display=m==="map"?"block":"none";$("listWrap").classList.toggle("hide",m!=="list");$("locBtn").style.display=m==="map"?"flex":"none";if(m==="map"){ensureMap();setTimeout(()=>map.invalidateSize(),150);startWatch();
   if(!window._mapRO&&map&&typeof ResizeObserver!=="undefined"){try{window._mapRO=new ResizeObserver(()=>{if(map)map.invalidateSize();});window._mapRO.observe($('map'));}catch(_){}}
 }renderHub();}
-function ensureMap(){if(map)return;// ── Supabase ────────────────────────────────────────────────────────────
+function ensureMap(){if(map)return;
+if(typeof L==="undefined"){$("map").innerHTML='<div class="empty">Connexion Internet requise pour la carte.</div>';return;}map=L.map("map",{zoomControl:false,maxZoom:22}).setView([47,2],5);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:22,maxNativeZoom:19,attribution:"© OpenStreetMap"}).addTo(map);}
+// ── Supabase ────────────────────────────────────────────────────────────
 // 1. supabase.com → New Project (EU) → Settings → API
 const SUPA_URL='https://ciwnmiiosuftahpdwkzn.supabase.co';        // ex: https://abcdef.supabase.co
 const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpd25taWlvc3VmdGFocGR3a3puIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMjgxNjYsImV4cCI6MjA5NzcwNDE2Nn0.9gRZSdZv-LfXr22U-bnUxbs3TR3eY7GDpdXchIzDc8o';   // clé publique anon
@@ -736,7 +738,6 @@ function closeLbx(){
 }
 $("lbxClose").addEventListener("click",closeLbx);
 $("lbx").addEventListener("click",e=>{if(e.target===$("lbx"))closeLbx();});
-if(typeof L==="undefined"){$("map").innerHTML='<div class="empty">Connexion Internet requise pour la carte.</div>';return;}map=L.map("map",{zoomControl:false,maxZoom:22}).setView([47,2],5);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:22,maxNativeZoom:19,attribution:"© OpenStreetMap"}).addTo(map);}
 const DAY=864e5, DORMANT_DAYS=395, MIN_SCORE=90;// alignement minimum pour valider un Time Frame
 // Un point est "dormant" s'il n'a rien reçu depuis plus de ~13 mois
 function tsAge(ts){return Date.now()-(ts.lastUpdated||ts.created);}
@@ -1146,6 +1147,30 @@ $("del").addEventListener("click",async()=>{
 
 // ── Ajout Time Frame ──────────────────────────────────────────────────────
 let following=false,fbusy=false,fOrb=null,fBf=null,fdes=null,fkp=null,fdims=null,fsmH=null,fmiss=0,flocked=false,fLastScore=0;
+// Rejette une homographie dégénérée (image écrasée en un point, repliée ou explosée)
+function isSaneH(H,W,Hh){
+  try{
+    const d=H.data64F;if(!d||d.length<9)return false;
+    for(let i=0;i<9;i++){if(!isFinite(d[i]))return false;}
+    // Projette les 4 coins et vérifie que le quadrilatère reste plausible
+    const pr=(x,y)=>{const w=d[6]*x+d[7]*y+d[8];if(!w||Math.abs(w)<1e-9)return null;
+      return[(d[0]*x+d[1]*y+d[2])/w,(d[3]*x+d[4]*y+d[5])/w];};
+    const c=[pr(0,0),pr(W,0),pr(W,Hh),pr(0,Hh)];
+    if(c.some(p=>!p||!isFinite(p[0])||!isFinite(p[1])))return false;
+    // Aire par la formule du lacet
+    let a=0;for(let i=0;i<4;i++){const p=c[i],q=c[(i+1)%4];a+=p[0]*q[1]-q[0]*p[1];}
+    a=Math.abs(a)/2;
+    const ref=W*Hh;
+    if(a<ref*0.08||a>ref*12)return false;      // trop écrasé ou trop dilaté
+    // Les côtés ne doivent pas s'effondrer
+    const side=(p,q)=>Math.hypot(q[0]-p[0],q[1]-p[1]);
+    const L=[side(c[0],c[1]),side(c[1],c[2]),side(c[2],c[3]),side(c[3],c[0])];
+    const mn=Math.min(...L),mx=Math.max(...L);
+    if(mn<Math.min(W,Hh)*0.15)return false;    // un côté quasi nul = implosion
+    if(mx/Math.max(mn,1e-6)>6)return false;    // quadrilatère trop déformé
+    return true;
+  }catch(_){return false;}
+}
 function projectPt(h,x,y){const w=h[6]*x+h[7]*y+h[8];return[(h[0]*x+h[1]*y+h[2])/w,(h[3]*x+h[4]*y+h[5])/w];}
 function quadOk(f,w,h){let sg=0;for(let i=0;i<4;i++){const j=(i+1)%4,k=(i+2)%4,ax=f[j*2]-f[i*2],ay=f[j*2+1]-f[i*2+1],bx=f[k*2]-f[j*2],by=f[k*2+1]-f[j*2+1],cr=ax*by-ay*bx;if(Math.abs(cr)<1e-3)return false;const s=Math.sign(cr);if(sg===0)sg=s;else if(s!==sg)return false;}let a=0;for(let i=0;i<4;i++){const j=(i+1)%4;a+=f[i*2]*f[j*2+1]-f[j*2]*f[i*2+1];}a=Math.abs(a)/2;return a>w*h*0.01&&a<w*h*22;}
 $("addFrame").addEventListener("click",async()=>{
@@ -1284,7 +1309,8 @@ $("makeVid").addEventListener("click",async()=>{
   const orb=fOrb||new cv.ORB(800);fOrb=orb;const bf=fBf||new cv.BFMatcher(cv.NORM_HAMMING,false);fBf=bf;
   const load=s=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=s;});
   const first=await store.get("ph:"+ids[0]);const im0=await load(first.data);const s0=Math.min(1,1024/Math.max(im0.width,im0.height)),W=Math.round(im0.width*s0),Hh=Math.round(im0.height*s0);const c0=document.createElement("canvas");c0.width=W;c0.height=Hh;c0.getContext("2d").drawImage(im0,0,0,W,Hh);const r0=cv.imread(c0),g0=new cv.Mat();cv.cvtColor(r0,g0,cv.COLOR_RGBA2GRAY);r0.delete();const kp0=new cv.KeyPointVector(),d0=new cv.Mat(),m0=new cv.Mat();orb.detectAndCompute(g0,m0,kp0,d0);m0.delete();g0.delete();const rp=[];for(let i=0;i<kp0.size();i++){const p=kp0.get(i).pt;rp.push(p.x,p.y);}kp0.delete();const vidFrames=[c0];
-  for(let n=1;n<ids.length;n++){const rec=await store.get("ph:"+ids[n]);const im=await load(rec.data);const s=Math.min(1,1024/Math.max(im.width,im.height));const cw=Math.round(im.width*s),ch=Math.round(im.height*s);const cc=document.createElement("canvas");cc.width=cw;cc.height=ch;cc.getContext("2d").drawImage(im,0,0,cw,ch);let src2=cv.imread(cc),gr=new cv.Mat(),kp=new cv.KeyPointVector(),des=new cv.Mat(),mk=new cv.Mat(),mt=null,sM=null,dM=null,H=null,dst=null,out=null;try{cv.cvtColor(src2,gr,cv.COLOR_RGBA2GRAY);orb.detectAndCompute(gr,mk,kp,des);if(des.rows>=20){mt=new cv.DMatchVectorVector();bf.knnMatch(des,d0,mt,2);const a=[],b=[];for(let i=0;i<mt.size();i++){const mv=mt.get(i);if(mv.size()<2)continue;const x=mv.get(0),y=mv.get(1);if(x.distance<0.75*y.distance){const p=kp.get(x.queryIdx).pt;a.push(p.x,p.y);b.push(rp[x.trainIdx*2],rp[x.trainIdx*2+1]);}}if(a.length/2>=12){sM=cv.matFromArray(a.length/2,1,cv.CV_32FC2,a);dM=cv.matFromArray(b.length/2,1,cv.CV_32FC2,b);H=cv.findHomography(sM,dM,cv.RANSAC,5);if(!H.empty()&&H.rows===3){dst=new cv.Mat();cv.warpPerspective(src2,dst,H,new cv.Size(W,Hh),cv.INTER_LINEAR,cv.BORDER_CONSTANT,new cv.Scalar(0,0,0,255));out=document.createElement("canvas");out.width=W;out.height=Hh;cv.imshow(out,dst);}}}}catch(e){}[src2,gr,kp,des,mk,mt,sM,dM,H,dst].forEach(o=>{try{o&&o.delete&&o.delete();}catch(_){}});vidFrames.push(out||cc);await new Promise(r=>setTimeout(r,0));}d0.delete();
+  for(let n=1;n<ids.length;n++){const rec=await store.get("ph:"+ids[n]);const im=await load(rec.data);const s=Math.min(1,1024/Math.max(im.width,im.height));const cw=Math.round(im.width*s),ch=Math.round(im.height*s);const cc=document.createElement("canvas");cc.width=cw;cc.height=ch;cc.getContext("2d").drawImage(im,0,0,cw,ch);let src2=cv.imread(cc),gr=new cv.Mat(),kp=new cv.KeyPointVector(),des=new cv.Mat(),mk=new cv.Mat(),mt=null,sM=null,dM=null,H=null,dst=null,out=null;try{cv.cvtColor(src2,gr,cv.COLOR_RGBA2GRAY);orb.detectAndCompute(gr,mk,kp,des);if(des.rows>=20){mt=new cv.DMatchVectorVector();bf.knnMatch(des,d0,mt,2);const a=[],b=[];for(let i=0;i<mt.size();i++){const mv=mt.get(i);if(mv.size()<2)continue;const x=mv.get(0),y=mv.get(1);if(x.distance<0.75*y.distance){const p=kp.get(x.queryIdx).pt;a.push(p.x,p.y);b.push(rp[x.trainIdx*2],rp[x.trainIdx*2+1]);}}if(a.length/2>=12){sM=cv.matFromArray(a.length/2,1,cv.CV_32FC2,a);dM=cv.matFromArray(b.length/2,1,cv.CV_32FC2,b);H=cv.findHomography(sM,dM,cv.RANSAC,5);
+if(!H.empty()&&H.rows===3&&isSaneH(H,W,Hh)){dst=new cv.Mat();cv.warpPerspective(src2,dst,H,new cv.Size(W,Hh),cv.INTER_LINEAR,cv.BORDER_CONSTANT,new cv.Scalar(0,0,0,255));out=document.createElement("canvas");out.width=W;out.height=Hh;cv.imshow(out,dst);}}}}catch(e){}[src2,gr,kp,des,mk,mt,sM,dM,H,dst].forEach(o=>{try{o&&o.delete&&o.delete();}catch(_){}});vidFrames.push(out||cc);await new Promise(r=>setTimeout(r,0));}d0.delete();
   // Lecture canvas
   const cvs=$("player");cvs.width=W;cvs.height=Hh;cvs.style.display="block";$("hero").style.display="none";
   pvFrames=vidFrames;pvIds=ids;pvW=W;pvH=Hh;pvIndex=0;
