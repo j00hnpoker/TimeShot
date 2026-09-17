@@ -260,6 +260,8 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:20px;height:20px;b
     <button class="btn sm" id="expAll" style="flex:1;font-size:11px;opacity:.7">↓ Sauvegarder</button>
     <button class="btn sm" id="impAll" style="flex:1;font-size:11px;opacity:.7">↑ Restaurer</button>
   </div>
+  <button class="btn sm" id="resyncBtn" style="width:100%;display:none;font-size:11px;opacity:.75">↻ Re-synchroniser les photos communautaires</button>
+  <div class="note" id="resyncNote" style="text-align:center"></div>
   <input type="file" id="impFile" accept="application/json" style="display:none">
 </div>
   <div id="map"></div>
@@ -495,7 +497,11 @@ async function uploadCommunityPhoto(phId,dataUrl,tsId){
     const blob=dataUrlToBlob(dataUrl);
     const path=sbUser.id+"/"+tsId+"/"+phId+".jpg";
     const{error:upErr}=await sb.storage.from(COMMUNITY_BUCKET).upload(path,blob,{contentType:"image/jpeg",upsert:true});
-    if(upErr){console.warn("[upload]",upErr);return null;}
+    if(upErr){
+      console.warn("[upload]",upErr);
+      if($("resyncNote"))$("resyncNote").textContent="Envoi refusé : "+(upErr.message||upErr);
+      return null;
+    }
     const{data:pub}=sb.storage.from(COMMUNITY_BUCKET).getPublicUrl(path);
     const uploadAfter=new Date(Date.now()+RETRACT_DAYS*864e5).toISOString();
     await sb.from("photo_queue").upsert({
@@ -604,6 +610,7 @@ async function checkAdmin(){
   isAdmin=false;
   if(sb&&sbUser){try{const{data}=await sb.from("admins").select("user_id").eq("user_id",sbUser.id).maybeSingle();isAdmin=!!data;}catch(_){}}
   if($("modBtn"))$("modBtn").style.display=isAdmin?"flex":"none";
+  if($("resyncBtn"))$("resyncBtn").style.display=sbUser?"block":"none";
 }
 function updateAuthUI(){
   const b=$('authBtn');
@@ -1236,6 +1243,40 @@ sw.appendChild(it);_fi++;}}
 // ── Modération (admin) ──────────────────────────────────────────────────────
 $("zoomSlider").addEventListener("input",e=>applyZoom(e.target.value));
 $("camBack").addEventListener("click",()=>$("back").click());
+// ── Re-synchronisation des photos communautaires vers le stockage ──────────
+// Utile si des envois ont échoué (bucket absent, hors ligne, mauvais nom…).
+$("resyncBtn").addEventListener("click",async()=>{
+  if(!sb||!sbUser){alert("Connecte-toi d'abord.");return;}
+  const btn=$("resyncBtn"),note=$("resyncNote");
+  btn.disabled=true;let sent=0,already=0,failed=0,noPhoto=0;
+  try{
+    const idx=await idxGet();
+    for(const id of idx){
+      const ts=await store.get("ts:"+id);
+      if(!ts||ts.visibility!=="community"||!isMine(ts))continue;
+      const pids=[ts.refId,...(ts.frames||[])].filter(Boolean);
+      for(const pid of pids){
+        const path=sbUser.id+"/"+ts.id+"/"+pid+".jpg";
+        note.textContent="Envoi… "+(sent+already+failed+1)+" photo(s) traitée(s)";
+        // Déjà versée sur Commons : on n'y touche pas
+        let ex=null;
+        try{const r=await sb.from("photo_queue").select("status").eq("photo_path",path).maybeSingle();ex=r.data;}catch(_){}
+        if(ex&&ex.status==="uploaded"){already++;continue;}
+        const ph=await store.get("ph:"+pid);
+        if(!ph||!ph.data){noPhoto++;continue;}
+        const res=await uploadCommunityPhoto(pid,ph.data,ts.id);
+        if(res)sent++;else failed++;
+      }
+      await autoSync(ts);
+    }
+    note.textContent="Terminé : "+sent+" envoyée(s)"
+      +(already?" · "+already+" déjà sur Commons":"")
+      +(noPhoto?" · "+noPhoto+" introuvable(s) en local":"")
+      +(failed?" · "+failed+" échec(s)":"");
+  }catch(e){
+    note.textContent="Erreur : "+e.message;
+  }finally{btn.disabled=false;}
+});
 // ── Sauvegarde / restauration complète (migration entre appareils ou URL) ──
 $("expAll").addEventListener("click",async()=>{
   try{
