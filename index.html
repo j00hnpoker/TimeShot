@@ -449,10 +449,49 @@ const store=(window.storage&&window.storage.get)?{
   set:(k,v)=>window.storage.set(k,JSON.stringify(v)),
   del:k=>window.storage.delete(k)
 }:(()=>{
+  // Couche IndexedDB robuste : délais d'expiration, gestion du blocage,
+  // et réouverture automatique si la connexion se dégrade.
   let p=null;
-  const o=()=>p||(p=new Promise((res,rej)=>{const r=indexedDB.open("timeshot",1);r.onupgradeneeded=()=>r.result.createObjectStore("kv");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);}));
-  const tx=(m,fn)=>o().then(db=>new Promise((res,rej)=>{const t=db.transaction("kv",m),s=t.objectStore("kv"),q=fn(s);t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error);}));
-  return{get:k=>tx("readonly",s=>s.get(k)).then(v=>v==null?null:v),set:(k,v)=>tx("readwrite",s=>s.put(v,k)),del:k=>tx("readwrite",s=>s.delete(k))};
+  const IDB_TIMEOUT=8000;
+  function open(){
+    if(p)return p;
+    p=new Promise((res,rej)=>{
+      let done=false;
+      const fail=m=>{if(!done){done=true;p=null;rej(new Error(m));}};
+      let r;
+      try{r=indexedDB.open("timeshot",1);}catch(e){p=null;return rej(e);}
+      r.onupgradeneeded=()=>{try{if(!r.result.objectStoreNames.contains("kv"))r.result.createObjectStore("kv");}catch(_){}};
+      r.onsuccess=()=>{
+        if(done)return;done=true;
+        const db=r.result;
+        db.onclose=()=>{p=null;};
+        db.onversionchange=()=>{try{db.close();}catch(_){}p=null;};
+        res(db);
+      };
+      r.onerror=()=>fail("Stockage local inaccessible : "+((r.error&&r.error.message)||"erreur inconnue"));
+      r.onblocked=()=>fail("Stockage local bloqué — ferme les autres onglets de l'application.");
+      setTimeout(()=>fail("Stockage local : ouverture expirée. Recharge la page."),IDB_TIMEOUT);
+    });
+    return p;
+  }
+  function tx(mode,fn){
+    return open().then(db=>new Promise((res,rej)=>{
+      let done=false;
+      const fail=e=>{if(!done){done=true;p=null;rej(e instanceof Error?e:new Error(e||"erreur de stockage"));}};
+      let t,q;
+      try{t=db.transaction("kv",mode);q=fn(t.objectStore("kv"));}
+      catch(e){p=null;return rej(e);}
+      t.oncomplete=()=>{if(!done){done=true;res(q&&q.result);}};
+      t.onerror=()=>fail(t.error);
+      t.onabort=()=>fail(t.error||"transaction annulée");
+      setTimeout(()=>fail("Stockage local : opération expirée."),IDB_TIMEOUT);
+    }));
+  }
+  return{
+    get:k=>tx("readonly",s=>s.get(k)).then(v=>v==null?null:v),
+    set:(k,v)=>tx("readwrite",s=>s.put(v,k)),
+    del:k=>tx("readwrite",s=>s.delete(k))
+  };
 })();
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const idxGet=async()=>(await store.get("tsindex"))||[];
@@ -475,10 +514,17 @@ async function autoSync(ts){
     created_at:new Date(ts.created).toISOString(),
     last_updated:new Date(ts.lastUpdated||ts.created).toISOString()};
   try{
-    const{error}=await sb.from("timeshots").upsert(row,{onConflict:"id"});
+    const{error}=await withTimeout(sb.from("timeshots").upsert(row,{onConflict:"id"}),12000,"Synchronisation");
     $("syncStatus").style.color=error?"var(--warn)":"var(--lock)";
     $("syncStatus").textContent=error?"· erreur : "+error.message:"· synchronisé ✓";
-  }catch(e){$("syncStatus").textContent="· hors ligne";}
+  }catch(e){if($("syncStatus"))$("syncStatus").textContent="· hors ligne ("+(e.message||"")+")";}
+}
+// Expiration réseau : une requête qui ne répond pas ne doit jamais figer l'app
+function withTimeout(promise,ms,label){
+  return Promise.race([
+    promise,
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error((label||"Requête")+" : délai dépassé")),ms||12000))
+  ]);
 }
 // ── Upload photo communautaire vers Supabase Storage + file d'attente Commons ──
 const COMMUNITY_BUCKET="community-photos";
@@ -497,7 +543,7 @@ async function uploadCommunityPhoto(phId,dataUrl,tsId){
   try{
     const blob=dataUrlToBlob(dataUrl);
     const path=sbUser.id+"/"+tsId+"/"+phId+".jpg";
-    const{error:upErr}=await sb.storage.from(COMMUNITY_BUCKET).upload(path,blob,{contentType:"image/jpeg",upsert:true});
+    const{error:upErr}=await withTimeout(sb.storage.from(COMMUNITY_BUCKET).upload(path,blob,{contentType:"image/jpeg",upsert:true}),25000,"Envoi de la photo");
     if(upErr){
       console.warn("[upload]",upErr);
       if($("resyncNote"))$("resyncNote").textContent="Envoi refusé : "+(upErr.message||upErr);
@@ -1025,7 +1071,7 @@ async function snapHQ(maxd,q){
   if(window.ImageCapture&&camTrack){
     try{
       const ic=new ImageCapture(camTrack);
-      const blob=await ic.takePhoto();
+      const blob=await withTimeout(ic.takePhoto(),4000,"Capture pleine résolution");
       const bmp=await createImageBitmap(blob);
       const arLive=vw/vh, arShot=bmp.width/bmp.height;
       // Cadrage identique à l'aperçu ? sinon on retombe sur la capture écran
@@ -1272,7 +1318,7 @@ $("resyncBtn").addEventListener("click",async()=>{
         const path=sbUser.id+"/"+ts.id+"/"+pid+".jpg";
         note.textContent="Envoi… "+(sent+already+failed+noPhoto+1)+" photo(s)";
         let ex=null;
-        try{const r=await sb.from("photo_queue").select("status").eq("photo_path",path).maybeSingle();ex=r.data;}catch(_){}
+        try{const r=await withTimeout(sb.from("photo_queue").select("status").eq("photo_path",path).maybeSingle(),10000,"Lecture file");ex=r.data;}catch(_){}
         if(ex&&ex.status==="uploaded"){already++;continue;}
         const ph=await store.get("ph:"+pid);
         if(!ph||!ph.data){noPhoto++;continue;}
