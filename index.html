@@ -1378,7 +1378,7 @@ async function finalizeTS(){
 // ── Détail ────────────────────────────────────────────────────────────────
 let selected=new Set();
 async function openTS(id){
-  const ts=await store.get("ts:"+id);if(!ts){show("viewHub");renderHub();return;}
+  let ts=await store.get("ts:"+id);if(!ts){show("viewHub");renderHub();return;}
   activeTS=ts;mode="tag";stopWatch();
   $("title").innerHTML=esc(ts.label);$("player").style.display="none";$("hero").style.display="block";
   $("hero").src="";$("vidNote").textContent="";
