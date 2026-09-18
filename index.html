@@ -507,6 +507,12 @@ function buildFiche(ts){
 }
 async function autoSync(ts){
   if(typeof sb==="undefined"||!sb||!sbUser){if($("syncStatus"))$("syncStatus").textContent="· local (non connecté)";return{ok:false,error:"non connecté"};}
+  // Time Shot d'un autre contributeur : sa fiche lui appartient.
+  // Nos Time Frames remontent via le stockage et la file d'attente.
+  if(ts.ownerId&&ts.ownerId!==sbUser.id){
+    if($("syncStatus")){$("syncStatus").style.color="var(--muted)";$("syncStatus").textContent="· contribution à un Time Shot partagé";}
+    return{ok:true,skipped:true};
+  }
   const row={id:ts.id,user_id:sbUser.id,label:ts.label,visibility:ts.visibility,
     lat:ts.lat??null,lng:ts.lng??null,acc:ts.acc??null,heading:ts.heading??null,
     align:ts.align??null,frames:ts.frames??[],
@@ -788,14 +794,49 @@ async function loadCommunityFromServer(){
 // Importer une fiche communautaire (sans photo, juste les données de recalage)
 async function importCommunityTS(id){
   if(!sb){alert("Connexion Supabase requise.");return;}
-  const{data,error}=await sb.from("timeshots").select("*").eq("id",id).single();
-  if(error||!data){alert("Time Shot introuvable sur le serveur.");return;}
+  const note=$("communityNote");
+  if(note){note.style.color="";note.textContent="Chargement du Time Shot…";}
+  const{data,error}=await withTimeout(sb.from("timeshots").select("*").eq("id",id).single(),12000,"Lecture fiche");
+  if(error||!data){if(note){note.style.color="var(--warn)";note.textContent="Time Shot introuvable : "+((error&&error.message)||"");}return;}
   const ts={id:data.id,label:data.label,visibility:"community",
     lat:data.lat,lng:data.lng,acc:data.acc,heading:data.heading,
     created:new Date(data.created_at).getTime(),
     lastUpdated:new Date(data.last_updated).getTime(),
     ownerId:data.user_id,
-    refId:null,thumb:null,frames:[],align:data.align,videoW:data.optics?.videoW,videoH:data.optics?.videoH,zoom:data.optics?.zoom??null};
+    refId:null,thumb:null,frames:[],align:data.align,
+    videoW:data.optics?.videoW,videoH:data.optics?.videoH,zoom:data.optics?.zoom??null};
+
+  // ── Récupération des photos depuis le stockage communautaire ─────────────
+  try{
+    const{data:q}=await withTimeout(sb.from("photo_queue")
+      .select("photo_path,created_at,status").eq("timeshot_id",id)
+      .order("created_at",{ascending:true}),12000,"Liste des photos");
+    const rows=(q||[]).filter(r=>r.status!=="retracted"&&r.status!=="flagged");
+    const ids=[];
+    for(let i=0;i<rows.length;i++){
+      const r=rows[i];
+      if(note)note.textContent="Téléchargement des photos… "+(i+1)+"/"+rows.length;
+      const pid=r.photo_path.split("/").pop().replace(/\.jpg$/i,"");
+      try{
+        const{data:blob,error:dlErr}=await withTimeout(
+          sb.storage.from(COMMUNITY_BUCKET).download(r.photo_path),20000,"Téléchargement");
+        if(dlErr||!blob)continue;
+        const dataUrl=await new Promise(res=>{
+          const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=()=>res(null);fr.readAsDataURL(blob);
+        });
+        if(!dataUrl)continue;
+        await store.set("ph:"+pid,{data:dataUrl,created:new Date(r.created_at).getTime()});
+        ids.push(pid);
+      }catch(_){/* photo indisponible : on continue */}
+    }
+    if(ids.length){ts.refId=ids[0];ts.frames=ids.slice(1);}
+    if(note)note.textContent=ids.length
+      ? ids.length+" photo(s) récupérée(s) — tu peux ajouter un Time Frame."
+      : "Fiche importée, mais aucune photo disponible (retirées ou déjà sur Commons).";
+  }catch(e){
+    if(note){note.style.color="var(--warn)";note.textContent="Photos indisponibles : "+(e.message||e);}
+  }
+
   await store.set("ts:"+ts.id,ts);
   const idx=await idxGet();
   if(!idx.includes(ts.id)){idx.unshift(ts.id);await store.set("tsindex",idx);}
