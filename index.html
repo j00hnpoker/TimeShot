@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Time Shot · build 20260918-0911 -->
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
@@ -1939,7 +1940,7 @@ async function recordVideo(frames,name){
 }
 
 if(typeof L==="undefined"){$("map").innerHTML='<div class="empty">Carte non disponible — connexion Internet requise.</div>';$("newBtn").disabled=true;}else{setHub("map");}
-  try{$("originNote").textContent="données de : "+location.origin;}catch(_){}
+  try{$("originNote").textContent="version 20260918-0911 · données de : "+location.origin;}catch(_){}
   // Onboarding au premier lancement
   store.get("seenIntro").then(seen=>{if(!seen)$("introModal").classList.remove("hide");}).catch(()=>$("introModal").classList.remove("hide"));
 })();
