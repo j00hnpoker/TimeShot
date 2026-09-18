@@ -506,7 +506,7 @@ function buildFiche(ts){
   return{schema:"timeshot/1",id:ts.id,label:ts.label,visibility:ts.visibility,location:{lat:ts.lat,lng:ts.lng,acc:ts.acc,heading:ts.heading},optics:{videoW:ts.videoW??null,videoH:ts.videoH??null,zoom:ts.zoom??null},align:ts.align,frames:[{t:new Date(ts.created).toISOString(),by:"local",ref:null,score:1},...ts.frames.map((f,i)=>({t:new Date(ts.lastUpdated||ts.created).toISOString(),id:f,n:i+1}))],createdAt:new Date(ts.created).toISOString(),lastUpdated:new Date(ts.lastUpdated||ts.created).toISOString()};
 }
 async function autoSync(ts){
-  if(typeof sb==="undefined"||!sb||!sbUser){if($("syncStatus"))$("syncStatus").textContent="· local (non connecté)";return;}
+  if(typeof sb==="undefined"||!sb||!sbUser){if($("syncStatus"))$("syncStatus").textContent="· local (non connecté)";return{ok:false,error:"non connecté"};}
   const row={id:ts.id,user_id:sbUser.id,label:ts.label,visibility:ts.visibility,
     lat:ts.lat??null,lng:ts.lng??null,acc:ts.acc??null,heading:ts.heading??null,
     align:ts.align??null,frames:ts.frames??[],
@@ -516,9 +516,13 @@ async function autoSync(ts){
     last_updated:new Date(ts.lastUpdated||ts.created).toISOString()};
   try{
     const{error}=await withTimeout(sb.from("timeshots").upsert(row,{onConflict:"id"}),12000,"Synchronisation");
-    $("syncStatus").style.color=error?"var(--warn)":"var(--lock)";
-    $("syncStatus").textContent=error?"· erreur : "+error.message:"· synchronisé ✓";
-  }catch(e){if($("syncStatus"))$("syncStatus").textContent="· hors ligne ("+(e.message||"")+")";}
+    if($("syncStatus")){
+      $("syncStatus").style.color=error?"var(--warn)":"var(--lock)";
+      $("syncStatus").textContent=error?"· erreur : "+error.message:"· synchronisé ✓";
+    }
+    if(error){console.warn("[autoSync]",error);return{ok:false,error:error.message};}
+    return{ok:true};
+  }catch(e){if($("syncStatus"))$("syncStatus").textContent="· hors ligne";return{ok:false,error:e.message||String(e)};}
 }
 // Expiration réseau : une requête qui ne répond pas ne doit jamais figer l'app
 function withTimeout(promise,ms,label){
@@ -1310,7 +1314,7 @@ $("resyncBtn").addEventListener("click",async()=>{
   if(!sb){note.textContent="Supabase non initialisé (hors ligne ?)";return;}
   if(!sbUser){note.textContent="Connecte-toi d'abord (bouton en haut à droite).";return;}
   btn.disabled=true;
-  let total=0,community=0,mine=0,sent=0,already=0,failed=0,noPhoto=0,notMine=[];
+  let total=0,community=0,mine=0,sent=0,already=0,failed=0,noPhoto=0,notMine=[],syncOk=0,syncErr=null;
   try{
     const idx=await idxGet();
     total=idx.length;
@@ -1338,7 +1342,8 @@ $("resyncBtn").addEventListener("click",async()=>{
         const res=await uploadCommunityPhoto(pid,ph.data,ts.id);
         if(res)sent++;else failed++;
       }
-      await autoSync(ts);
+      const sres=await autoSync(ts);
+      if(sres&&!sres.ok)syncErr=sres.error;else syncOk++;
     }
     let msg="";
     if(total===0)msg="Aucun Time Shot sur cet appareil. Tes données sont peut-être sur l'autre adresse — utilise Restaurer.";
@@ -1348,6 +1353,8 @@ $("resyncBtn").addEventListener("click",async()=>{
       +(noPhoto?" · "+noPhoto+" photo(s) absente(s) en local":"")
       +(failed?" · "+failed+" échec(s)":"");
     if(notMine.length)msg+=" · "+notMine.length+" ré-attribué(s) à ton compte";
+    if(community)msg+=" · fiches : "+syncOk+" synchronisée(s)";
+    if(syncErr){msg+=" · ⚠ fiche refusée : "+syncErr;note.style.color="var(--warn)";}
     note.textContent=msg;
     renderHub();
   }catch(e){
