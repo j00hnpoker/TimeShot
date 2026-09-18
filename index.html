@@ -792,6 +792,45 @@ async function loadCommunityFromServer(){
   }
 }
 // Importer une fiche communautaire (sans photo, juste les données de recalage)
+// Récupère depuis le stockage les photos d'un Time Shot communautaire
+// dont les images manquent localement (autre appareil, autre adresse, réinstallation).
+async function fetchMissingPhotos(ts){
+  if(!sb||!ts||ts.visibility!=="community")return 0;
+  const owner=ts.ownerId||(sbUser&&sbUser.id);
+  if(!owner)return 0;
+  const dir=owner+"/"+ts.id;
+  let rows=[];
+  try{
+    const{data:files}=await withTimeout(
+      sb.storage.from(COMMUNITY_BUCKET).list(dir,{limit:200,sortBy:{column:"created_at",order:"asc"}}),
+      12000,"Liste du stockage");
+    rows=(files||[]).filter(f=>/\.jpe?g$/i.test(f.name));
+  }catch(e){console.warn("[fetchMissing]",e.message);return 0;}
+  if(!rows.length)return 0;
+  const ids=[];let got=0;
+  for(const f of rows){
+    const pid=f.name.replace(/\.jpe?g$/i,"");
+    ids.push(pid);
+    const ex=await store.get("ph:"+pid);
+    if(ex&&ex.data)continue;// déjà présente
+    try{
+      const{data:blob}=await withTimeout(sb.storage.from(COMMUNITY_BUCKET).download(dir+"/"+f.name),20000,"Téléchargement");
+      if(!blob)continue;
+      const dataUrl=await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=()=>res(null);fr.readAsDataURL(blob);});
+      if(!dataUrl)continue;
+      await store.set("ph:"+pid,{data:dataUrl,created:f.created_at?new Date(f.created_at).getTime():ts.created});
+      got++;
+    }catch(_){}
+  }
+  // Reconstitue la série si elle était vide ou incomplète
+  if(ids.length&&(!ts.refId||!(ts.frames||[]).length)){
+    ts.refId=ts.refId||ids[0];
+    const rest=ids.filter(x=>x!==ts.refId);
+    if(rest.length>(ts.frames||[]).length)ts.frames=rest;
+    await store.set("ts:"+ts.id,ts);
+  }
+  return got;
+}
 async function importCommunityTS(id){
   if(!sb){alert("Connexion Supabase requise.");return;}
   const note=$("communityNote");
@@ -808,10 +847,32 @@ async function importCommunityTS(id){
 
   // ── Récupération des photos depuis le stockage communautaire ─────────────
   try{
-    const{data:q}=await withTimeout(sb.from("photo_queue")
-      .select("photo_path,created_at,status").eq("timeshot_id",id)
-      .order("created_at",{ascending:true}),12000,"Liste des photos");
-    const rows=(q||[]).filter(r=>r.status!=="retracted"&&r.status!=="flagged");
+    let rows=[];
+    // 1) Source principale : la file d'attente
+    try{
+      const{data:q,error:qe}=await withTimeout(sb.from("photo_queue")
+        .select("photo_path,created_at,status").eq("timeshot_id",id)
+        .order("created_at",{ascending:true}),12000,"Liste des photos");
+      if(qe)console.warn("[import] photo_queue:",qe.message);
+      rows=(q||[]).filter(r=>r.status!=="retracted"&&r.status!=="flagged");
+    }catch(e){console.warn("[import] photo_queue:",e.message);}
+    // 2) Repli : lister directement le dossier du Time Shot dans le stockage
+    if(!rows.length&&data.user_id){
+      const dir=data.user_id+"/"+id;
+      try{
+        const{data:files,error:le}=await withTimeout(
+          sb.storage.from(COMMUNITY_BUCKET).list(dir,{limit:200,sortBy:{column:"created_at",order:"asc"}}),
+          12000,"Liste du stockage");
+        if(le)console.warn("[import] list:",le.message);
+        rows=(files||[]).filter(f=>/\.jpe?g$/i.test(f.name))
+          .map(f=>({photo_path:dir+"/"+f.name,created_at:f.created_at||data.created_at,status:"pending"}));
+        if(rows.length&&note)note.textContent="Photos trouvées dans le stockage ("+rows.length+")…";
+      }catch(e){console.warn("[import] list:",e.message);}
+    }
+    if(!rows.length&&note){
+      note.style.color="var(--warn)";
+      note.textContent="Aucune photo trouvée pour ce Time Shot (ni file d'attente, ni stockage).";
+    }
     const ids=[];
     for(let i=0;i<rows.length;i++){
       const r=rows[i];
@@ -830,9 +891,12 @@ async function importCommunityTS(id){
       }catch(_){/* photo indisponible : on continue */}
     }
     if(ids.length){ts.refId=ids[0];ts.frames=ids.slice(1);}
-    if(note)note.textContent=ids.length
-      ? ids.length+" photo(s) récupérée(s) — tu peux ajouter un Time Frame."
-      : "Fiche importée, mais aucune photo disponible (retirées ou déjà sur Commons).";
+    if(note&&rows.length){
+      note.style.color=ids.length?"":"var(--warn)";
+      note.textContent=ids.length
+        ? ids.length+" photo(s) récupérée(s) sur "+rows.length+" — tu peux ajouter un Time Frame."
+        : rows.length+" fichier(s) listé(s) mais aucun téléchargeable (droits d'accès ?).";
+    }
   }catch(e){
     if(note){note.style.color="var(--warn)";note.textContent="Photos indisponibles : "+(e.message||e);}
   }
@@ -1324,8 +1388,22 @@ async function openTS(id){
   $("addFrame").textContent="+ Ajouter un Time Frame";$("addFrame").disabled=false;
   $("toPerso").style.display=(ts.visibility==="community"&&isMine(ts))?"block":"none";
   show("viewTag");// afficher immédiatement, charger le contenu en arrière-plan
-  const lastPhId=ts.frames.length>0?ts.frames[ts.frames.length-1]:ts.refId;
-  const lastPh=await store.get("ph:"+lastPhId);$("hero").src=lastPh?lastPh.data:"";
+  let lastPhId=ts.frames.length>0?ts.frames[ts.frames.length-1]:ts.refId;
+  let lastPh=lastPhId?await store.get("ph:"+lastPhId):null;
+  // Photo absente localement : on tente de la récupérer depuis le stockage
+  if((!lastPh||!lastPh.data)&&ts.visibility==="community"&&sb){
+    $("vidNote").textContent="Récupération des photos…";
+    const got=await fetchMissingPhotos(ts);
+    if(got){
+      activeTS=ts=await store.get("ts:"+ts.id)||ts;
+      lastPhId=ts.frames.length>0?ts.frames[ts.frames.length-1]:ts.refId;
+      lastPh=lastPhId?await store.get("ph:"+lastPhId):null;
+      $("vidNote").textContent=got+" photo(s) récupérée(s).";
+    }else{
+      $("vidNote").textContent="Photos indisponibles pour ce Time Shot.";
+    }
+  }
+  $("hero").src=lastPh&&lastPh.data?lastPh.data:"";
   $("typePill").innerHTML=ts.visibility==="personal"?'<span class="type-pill perso">personnel</span>':'<span class="type-pill com">communautaire</span>';
   $("syncStatus").textContent="· fiche synchronisée";
   const last=ts.lastUpdated||ts.created;
