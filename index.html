@@ -262,6 +262,7 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:20px;height:20px;b
   </div>
   <button class="btn sm" id="resyncBtn" style="width:100%;font-size:11px;opacity:.75">↻ Re-synchroniser les photos communautaires</button>
   <div class="note" id="resyncNote" style="text-align:center"></div>
+  <div class="note" id="communityNote" style="text-align:center"></div>
   <div class="note" id="originNote" style="text-align:center;opacity:.45;font-size:10px"></div>
   <input type="file" id="impFile" accept="application/json" style="display:none">
 </div>
@@ -749,24 +750,36 @@ $("authForgot").addEventListener("click",async(e)=>{
 });
 // Chargement des Time Shots communautaires depuis Supabase
 async function loadCommunityFromServer(){
-  if(!sb||!map)return;
+  const note=$("communityNote");
+  if(!sb){if(note)note.textContent="";return;}
+  if(!map)return;
   try{
-    const{data,error}=await sb.from("timeshots")
-      .select("id,label,lat,lng,last_updated,frames")
-      .eq("visibility","community").not("lat","is",null).limit(500);
-    if(error||!data)return;
+    const{data,error}=await withTimeout(sb.from("timeshots")
+      .select("id,label,lat,lng,last_updated,frames,user_id")
+      .eq("visibility","community").not("lat","is",null).limit(500),12000,"Découverte communautaire");
+    if(error){if(note){note.style.color="var(--warn)";note.textContent="Découverte indisponible : "+error.message;}return;}
+    if(!data){if(note)note.textContent="";return;}
     const localIds=new Set(await idxGet());
+    let shown=0;
     for(const row of data){
       if(localIds.has(row.id))continue;
       const lu=new Date(row.last_updated).getTime();
       const n=(Array.isArray(row.frames)?row.frames.length:0)+1;
-      const mk=L.marker([row.lat,row.lng],{icon:makeIcon(tsColor({lastUpdated:lu,created:lu}))})
+      const mk=L.marker([row.lat,row.lng],{icon:makeIcon(tsColor({lastUpdated:lu,created:lu,frames:row.frames||[]}),{mine:false,perso:false})})
         .addTo(map)
-        .bindTooltip(`<b>${esc(row.label)}</b><br>${n} Time Frame${n>1?"s":""} · 🌐`,{direction:"top"})
+        .bindTooltip(`<b>${esc(row.label)}</b><br>${n} Time Frame${n>1?"s":""} · 🌐 communautaire`,{direction:"top"})
         .on("click",()=>importCommunityTS(row.id));
-      markers.push(mk);
+      markers.push(mk);shown++;
     }
-  }catch(e){console.warn("[community]",e);}
+    if(note){
+      note.style.color="";
+      note.textContent=shown?shown+" Time Shot(s) communautaire(s) à proximité — touche un marqueur 🌐 pour participer":
+        (data.length?"":"Aucun Time Shot communautaire publié pour l'instant.");
+    }
+  }catch(e){
+    console.warn("[community]",e);
+    if(note){note.style.color="var(--warn)";note.textContent="Découverte indisponible : "+(e.message||e);}
+  }
 }
 // Importer une fiche communautaire (sans photo, juste les données de recalage)
 async function importCommunityTS(id){
@@ -985,7 +998,7 @@ async function renderHub(){
       else db.style.display="none";
     }
   }
-  // if(hubMode==="map")setTimeout(()=>loadCommunityFromServer(),500); // TODO: debuguer scope
+  if(hubMode==="map")setTimeout(()=>loadCommunityFromServer(),400);
   drawCards();
 }
 async function drawCards(){
